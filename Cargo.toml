@@ -1,16 +1,9 @@
 [package]
-name = "pi_arr"
-version = "0.19.7"
+name = "pi_vec_remain"
+version = "0.1.0"
 authors = ["zmax <zmax@gaia.world>"]
 edition = "2021"
-description = "lock-free & auto-expansion array"
+description = "vec remain range"
 repository = "https://github.com/GaiaWorld/pi_arr.git"
 license = "MIT OR Apache-2.0"
-keywords = ["pi", "array", "pi_arr"]
-
-[dependencies]
-pi_share = "0.4"
-
-
-[dev-dependencies]
-rand = "0.8"
+keywords = ["pi", "vec", "remain"]
