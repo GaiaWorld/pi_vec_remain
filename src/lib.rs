@@ -62,14 +62,17 @@ impl<T, R: RangeBounds<usize>> VecRemain<R> for Vec<T> {
     fn remain_to(&mut self, range: R, other: &mut Self) {
         let end = match range.end_bound() {
             Bound::Included(&end) => {
-                if end + 1 < self.len() {
-                    end + 1
+                let end = end + 1;
+                if end < self.len() {
+                    self.truncate(end);
+                    end
                 } else {
                     self.len()
                 }
             }
             Bound::Excluded(&end) => {
                 if end < self.len() {
+                    self.truncate(end);
                     end
                 } else {
                     self.len()
