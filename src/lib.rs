@@ -9,45 +9,33 @@ use std::{
 };
 
 pub trait VecRemain<R: RangeBounds<usize>> {
-    fn remain(&mut self, range: R);
-    fn remain_to(&mut self, range: R, other: &mut Self);
+    fn remain(&mut self, range: R) -> usize;
+    fn remain_to(&mut self, range: R, other: &mut Self) -> usize;
 }
 
 impl<T, R: RangeBounds<usize>> VecRemain<R> for Vec<T> {
-    fn remain(&mut self, range: R) {
-        match range.end_bound() {
-            Bound::Included(&end) => {
-                if end + 1 < self.len() {
-                    self.truncate(end + 1);
-                }
-            }
-            Bound::Excluded(&end) => {
-                if end < self.len() {
-                    self.truncate(end);
-                }
-            }
-            Bound::Unbounded => {}
-        }
+    fn remain(&mut self, range: R) -> usize {
+        let end = end(self, range.end_bound());
         let start = match range.start_bound() {
             Bound::Included(&start) => {
                 if start == 0 {
-                    return;
+                    return end;
                 }
-                if start >= self.len() {
+                if start >= end {
                     self.clear();
-                    return;
+                    return 0;
                 }
                 start
             }
             Bound::Excluded(&start) => {
-                if start >= self.len() + 1 {
+                if start.saturating_add(1) >= end {
                     self.clear();
-                    return;
+                    return 0;
                 }
-                start - 1
+                start.saturating_add(1)
             }
             Bound::Unbounded => {
-                return;
+                return end;
             }
         };
         let ptr = self.as_mut_ptr();
@@ -58,42 +46,24 @@ impl<T, R: RangeBounds<usize>> VecRemain<R> for Vec<T> {
             self.set_len(self.len() - start);
             ptr.add(start).copy_to(ptr, self.len());
         }
+        end - start
     }
-    fn remain_to(&mut self, range: R, other: &mut Self) {
-        let end = match range.end_bound() {
-            Bound::Included(&end) => {
-                let end = end + 1;
-                if end < self.len() {
-                    self.truncate(end);
-                    end
-                } else {
-                    self.len()
-                }
-            }
-            Bound::Excluded(&end) => {
-                if end < self.len() {
-                    self.truncate(end);
-                    end
-                } else {
-                    self.len()
-                }
-            }
-            Bound::Unbounded => self.len(),
-        };
+    fn remain_to(&mut self, range: R, other: &mut Self) -> usize {
+        let end = end(self, range.end_bound());
         let start = match range.start_bound() {
             Bound::Included(&start) => {
                 if start >= end {
                     self.clear();
-                    return;
+                    return 0;
                 }
                 start
             }
             Bound::Excluded(&start) => {
-                if start >= end + 1 {
+                if start.saturating_add(1) >= end {
                     self.clear();
-                    return;
+                    return 0;
                 }
-                start - 1
+                start.saturating_add(1)
             }
             Bound::Unbounded => 0,
         };
@@ -110,9 +80,31 @@ impl<T, R: RangeBounds<usize>> VecRemain<R> for Vec<T> {
             other.set_len(other.len() + count);
             self.set_len(0);
         }
+        count
     }
 }
-
+fn end<T>(vec: &mut Vec<T>, bound: Bound<&usize>) -> usize {
+    match bound {
+        Bound::Included(end) => {
+            let end = end.saturating_add(1);
+            if end < vec.len() {
+                vec.truncate(end);
+                end
+            } else {
+                vec.len()
+            }
+        }
+        Bound::Excluded(end) => {
+            if *end < vec.len() {
+                vec.truncate(*end);
+                *end
+            } else {
+                vec.len()
+            }
+        }
+        Bound::Unbounded => vec.len(),
+    }
+}
 #[test]
 fn test_vec_remain() {
     let mut vec = vec![1, 2, 3, 4, 5];
