@@ -1,7 +1,7 @@
 //! 保留vec中指定范围的数据，其余部分释放
 
-#![feature(test)]
-extern crate test;
+// #![feature(test)]
+// extern crate test;
 
 use std::{
     ops::{Bound, RangeBounds},
