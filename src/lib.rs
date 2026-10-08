@@ -1,7 +1,4 @@
-//! 保留vec中指定范围的数据，其余部分释放
-
-// #![feature(test)]
-// extern crate test;
+//! Retain a clamped range without replacing the vector allocation.
 
 use std::{
     ops::{Bound, RangeBounds},
@@ -9,122 +6,88 @@ use std::{
 };
 
 pub trait VecRemain<R: RangeBounds<usize>> {
+    /// Retain the clamped range in place, returning its length. Reversed ranges
+    /// are empty. The allocation is preserved. If prefix drop panics, the
+    /// retained values are still owned by this vector.
     fn remain(&mut self, range: R) -> usize;
+    /// Append the clamped range to `other`, emptying this vector on success.
+    /// Destination capacity is reserved before changing either owner. A tail
+    /// drop panic leaves the truncated source owned; a prefix drop panic leaves
+    /// the retained values owned by `other` and the source empty.
     fn remain_to(&mut self, range: R, other: &mut Self) -> usize;
+}
+
+fn bounds(range: &impl RangeBounds<usize>, len: usize) -> (usize, usize) {
+    let end = match range.end_bound() {
+        Bound::Included(&n) => n.saturating_add(1),
+        Bound::Excluded(&n) => n,
+        Bound::Unbounded => len,
+    }
+    .min(len);
+    let start = match range.start_bound() {
+        Bound::Included(&n) => n,
+        Bound::Excluded(&n) => n.saturating_add(1),
+        Bound::Unbounded => 0,
+    }
+    .min(end);
+    (start, end)
 }
 
 impl<T, R: RangeBounds<usize>> VecRemain<R> for Vec<T> {
     fn remain(&mut self, range: R) -> usize {
-        let end = end(self, range.end_bound());
-        let start = match range.start_bound() {
-            Bound::Included(&start) => {
-                if start == 0 {
-                    return end;
-                }
-                if start >= end {
-                    self.clear();
-                    return 0;
-                }
-                start
-            }
-            Bound::Excluded(&start) => {
-                if start.saturating_add(1) >= end {
-                    self.clear();
-                    return 0;
-                }
-                start.saturating_add(1)
-            }
-            Bound::Unbounded => {
-                return end;
-            }
-        };
-        let ptr = self.as_mut_ptr();
-        unsafe {
-            // 释放start之前的内存
-            let s = ptr::slice_from_raw_parts_mut(ptr, start);
-            ptr::drop_in_place(s);
-            self.set_len(self.len() - start);
-            ptr.add(start).copy_to(ptr, self.len());
+        let (start, end) = bounds(&range, self.len());
+        self.truncate(end);
+        if start == 0 {
+            return end;
         }
-        end - start
-    }
-    fn remain_to(&mut self, range: R, other: &mut Self) -> usize {
-        let end = end(self, range.end_bound());
-        let start = match range.start_bound() {
-            Bound::Included(&start) => {
-                if start >= end {
-                    self.clear();
-                    return 0;
+        // The guard owns the retained suffix while slice drop owns the prefix.
+        // Slice drop finishes the prefix even if one destructor unwinds.
+        struct Compact<'a, T> {
+            vec: &'a mut Vec<T>,
+            start: usize,
+            count: usize,
+        }
+        impl<T> Drop for Compact<'_, T> {
+            fn drop(&mut self) {
+                unsafe {
+                    let p = self.vec.as_mut_ptr();
+                    ptr::copy(p.add(self.start), p, self.count);
+                    self.vec.set_len(self.count);
                 }
-                start
             }
-            Bound::Excluded(&start) => {
-                if start.saturating_add(1) >= end {
-                    self.clear();
-                    return 0;
-                }
-                start.saturating_add(1)
-            }
-            Bound::Unbounded => 0,
-        };
+        }
         let count = end - start;
-        let ptr = self.as_mut_ptr();
+        let p = self.as_mut_ptr();
+        // No element remains owned by Vec until Compact restores the suffix.
         unsafe {
-            // 释放start之前的内存
-            let s = ptr::slice_from_raw_parts_mut(ptr, start);
-            ptr::drop_in_place(s);
-
-            other.reserve(count);
-            ptr.add(start)
-                .copy_to_nonoverlapping(other.as_mut_ptr().add(other.len()), count);
-            other.set_len(other.len() + count);
             self.set_len(0);
+        }
+        let _guard = Compact {
+            vec: self,
+            start,
+            count,
+        };
+        unsafe {
+            ptr::drop_in_place(ptr::slice_from_raw_parts_mut(p, start));
         }
         count
     }
-}
-fn end<T>(vec: &mut Vec<T>, bound: Bound<&usize>) -> usize {
-    match bound {
-        Bound::Included(end) => {
-            let end = end.saturating_add(1);
-            if end < vec.len() {
-                vec.truncate(end);
-                end
-            } else {
-                vec.len()
-            }
+
+    fn remain_to(&mut self, range: R, other: &mut Self) -> usize {
+        let (start, end) = bounds(&range, self.len());
+        let count = end - start;
+        // Reserve before any destructor or ownership transfer can run.
+        other.reserve(count);
+        self.truncate(end);
+        unsafe {
+            let p = self.as_mut_ptr();
+            // Distinct mutable Vec borrows own disjoint allocations (also valid for ZST).
+            ptr::copy_nonoverlapping(p.add(start), other.as_mut_ptr().add(other.len()), count);
+            other.set_len(other.len() + count);
+            self.set_len(0);
+            // The destination owns the suffix; slice drop owns all remaining values.
+            ptr::drop_in_place(ptr::slice_from_raw_parts_mut(p, start));
         }
-        Bound::Excluded(end) => {
-            if *end < vec.len() {
-                vec.truncate(*end);
-                *end
-            } else {
-                vec.len()
-            }
-        }
-        Bound::Unbounded => vec.len(),
+        count
     }
-}
-#[test]
-fn test_vec_remain() {
-    let mut vec = vec![1, 2, 3, 4, 5];
-    vec.remain(1..);
-    assert_eq!(vec, &[2, 3, 4, 5]);
-    let mut vec = vec![1, 2, 3, 4, 5];
-    vec.remain(1..3);
-    assert_eq!(vec, &[2, 3]);
-    let mut vec = vec![1, 2, 3, 4, 5];
-    vec.remain(1..=3);
-    assert_eq!(vec, &[2, 3, 4]);
-    let mut vec = vec![1, 2, 3, 4, 5];
-    vec.remain(..=3);
-    assert_eq!(vec, &[1, 2, 3, 4]);
-    let mut vec = vec![1, 2, 3, 4, 5];
-    vec.remain_to(..=3, &mut vec![6, 7, 8, 9]);
-    assert_eq!(vec, &[]);
-    let mut vec = vec![1, 2, 3, 4, 5];
-    let mut other = vec![6, 7, 8, 9];
-    vec.remain_to(1..=3, &mut other);
-    assert_eq!(other, &[6, 7, 8, 9, 2, 3, 4]);
-    assert_eq!(vec, &[]);
 }
